@@ -98,3 +98,25 @@ class MyMindConfig(PretrainedConfig):
             if self.inference_rope_scaling
             else None
         )
+
+import torch
+import torch.nn as nn
+
+# RMSNorm implementation,继承自nn.Module
+class RMSNorm(nn.Module):
+    # 1. 定义init方法并初始化参数
+    def __init__(self, dim:int, eps:float=1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.gamma = nn.Parameter(torch.ones(dim))  # 可学习的缩放参数 gamma,维度与特征通道数相同
+
+    # 2. 计算均方根RMS并归一化
+    def _norm(self,x:torch.Tensor):
+        rms = torch.sqrt(torch.mean(x.pow(2), dim=-1, keepdim=True)+self.eps)
+        return x / rms
+
+    # 3. 定义前向传播方法
+    def forward(self, x:torch.Tensor):
+        output = self._norm(x) * self.gamma
+        return output
