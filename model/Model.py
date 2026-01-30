@@ -1,6 +1,7 @@
 from transformers import PretrainedConfig
 import math
 
+# 创建配置对象，后续其他类可以在参数中传入该配置对象以获取超参数
 class MyMindConfig(PretrainedConfig):
     """
     Configuration class for MyMind model.
@@ -261,7 +262,8 @@ def repeat_kv_heads(x:torch.Tensor, num_rep:int):
 
 
 # Class GQA
-class attention(nn.Module):
+class Attention(nn.Module):
+    # config
     def __init__(self, config:MyMindConfig):
         super().__init__()
         self.num_attention_heads = config.num_attention_heads
@@ -386,7 +388,7 @@ class FeedForward(nn.Module):
         self.w_up = nn.Linear(config.hidden_size, config.intermediate_size, bias=False) # value矩阵
         self.w_down = nn.Linear(config.intermediate_size, config.hidden_size, bias=False) # 输出矩阵
         # gate_proj: hidden -> intermediate (用于计算gate部分)
-        # up_proj: hidden -> intermediate (用于被gate的部分)
+        # up_proj: hidden -> intermediate (用于被gate的部分)·
         # down_proj: intermediate -> hidden (用于投影回hidden维度)
 
         self.act_fn = ACT2FN[config.hidden_act] # Huggingface中的激活函数映射字典，这里是silu(更加方便)
@@ -397,3 +399,54 @@ class FeedForward(nn.Module):
         up = self.w_up(x)      # 计算被gate的部分
         res = self.act_fn(gate) * up
         return self.dropout(self.w_down(res))  # 最终投影并应用dropout
+    
+
+# MiniMind Block： Transformer Block实现
+class MiniMindBlock(nn.Module):
+    def __init__(self, layer_id:int, config:MyMindConfig):
+        super().__init__()
+        self.num_attention_heads = config.num_attention_heads # 注意力头数
+        self.hidden_size = config.hidden_size # 隐藏层大小
+        self.head_dim = config.hidden_size // config.num_attention_heads # 每个头的维度
+        self.layer_id = layer_id # 层编号   
+
+        # GQA注意力层
+        self.attention = Attention(config)
+
+        # FFN层
+        self.ffn = FeedForward(config)
+
+        # RMSNorm层, 分别用于注意力和FFN
+        self.input_rmsnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps) # 注意力前归一化
+        self.post_attention_rmsnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps) # FFN前归一化
+
+    def forward(
+            self,
+            hidden_states:torch.Tensor, # (batch_size, seq_len, hidden_size) 中间输入
+            position_embeddings:Tuple[torch.Tensor, torch.Tensor], # cos,sin
+            past_key_value:Optional[Tuple[torch.Tensor, torch.Tensor]]=None, # KV cache，二元组(past_key, past_value)
+            use_cache:bool=False, # 是否返回缓存
+            attention_mask:Optional[torch.Tensor]=None, # 注意力掩码
+    ):
+        # Norm -> Attention -> Residual add -> Norm -> FFN -> Residual add
+        residual= hidden_states # 残差
+        
+        # 1. 注意力子层
+        normed_states = self.input_rmsnorm(hidden_states) # 归一化
+        
+        # 按照Attnetion类的forward方法的参数要求调用  
+        attn_output, present_key_value = self.attention(
+            hidden_states=normed_states,
+            position_embeddings=position_embeddings,
+            past_key_value=past_key_value,
+            use_cache=use_cache,
+            attention_mask=attention_mask
+        )
+        hidden_states = residual + attn_output # 残差连接
+
+        # 2. FFN子层
+        normed_states = self.post_attention_rmsnorm(hidden_states) # 归一化
+        ffn_output = self.ffn(normed_states)
+        hidden_states = hidden_states + ffn_output # 残差连接 
+
+        return hidden_states, present_key_value if use_cache else None    
