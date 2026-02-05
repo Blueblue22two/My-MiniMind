@@ -1,11 +1,16 @@
 import json
-from torch.util.data import Dataset
+import torch
+from torch.utils.data import Dataset
 import torch
 import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # 关闭tokenizer的并行加速，避免报错
 
 class PretrainDataset(Dataset):
+    """
+        PretrainDataset
+    """
+
     # 实现dataset内定的方法：
     # 1. _len_ 返回数据集大小
     # 2. __getitem__定义获取单个数据的方法 
