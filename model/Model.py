@@ -142,22 +142,29 @@ class RMSNorm(nn.Module):
 def precompute_freqs(
     dim: int,
     end: int = int(32 * 1024),
-    rope_base: float = 1e5,
+    rope_base: float = 1e5, # theta
     rope_scaling: Optional[dict] = None,
 ):
 
     """Precompute frequencies for RoPE.
-        Args:
-        dim: 嵌入维度（必须为偶数）
-        end: 最大位置索引（L_target）
-        rope_base: RoPE 基底 theta
-        scaling_factor: 扩展因子 alpha
-        beta: 高频保留比例，范围 (0, 1]
-    """
-    freqs = 1.0 / (rope_base ** (torch.arange(0, dim, 2).float() / dim)) # inverse frequencies
 
-    # YaRN RoPE scaling
+        Args:
+            dim: 嵌入维度（必须为偶数）
+            end: 最大位置索引（L_target）
+            rope_base: RoPE 基底 theta
+            rope_scaling: 可选的频率缩放配置(YARN方法)
+
+        returns:
+            cos: 位置编码的余弦部分，形状为 (seq_len, dim)
+            sin: 位置编码的正弦部分，形状为 (seq_len, dim)
+    """
+
+    freqs = 1.0 / (rope_base ** (torch.arange(0, dim, 2).float() / dim)) # 计算inverse frequencies
+
+    # YaRN RoPE scaling：外推
     if rope_scaling is not None:
+        # 使用dict.get()方法获取值，提供默认值
+        # 元组解包：同时赋值多个变量
         original_max, factor, beta_fast, beta_slow = (
             rope_scaling.get("original_max_position_embeddings", 2048),
             rope_scaling.get("factor", 4),
@@ -165,16 +172,20 @@ def precompute_freqs(
             rope_scaling.get("beta_slow", 1.0),
         )
 
-        # 若结束位置超过原始最大位置L_train，则应用YaRN缩放
+        # 若结束位置 > 原始最大位置L_train，则应用YaRN缩放
         if end / original_max > 1.0:
             # 计算相关维度corr_dim
+            # next()函数：找到第一个满足条件的元素
             corr_dim = next((i for i in range(dim // 2) if 2 * math.pi / freqs[i] > original_max),dim // 2)
+
+            # 计算每个维度的插值权重
             power = torch.arange(0, dim // 2, device=freqs.device).float() / max(dim // 2 - 1, 1)
 
-            # 窗口保留比例beta
+            # 计算窗口保留比例 beta
             beta = beta_slow + (beta_fast - beta_slow) * power
 
-            # 平滑窗口函数1 按照原论文公式: lambda = (1 + beta*alpha - beta) / (beta*alpha)
+            # 缩放公式（原论文公式）: lambda = (1 + beta*alpha - beta) / (beta*alpha)
+             # torch.where(): 条件选择，相当于 condition ? value1 : value2
             scale = torch.where(
                 torch.arange(dim // 2, device=freqs.device) < corr_dim,
                 (beta * factor - beta + 1) / (beta * factor),
@@ -184,14 +195,15 @@ def precompute_freqs(
             # 应用旋转频率缩放
             freqs = freqs * scale
 
-        m = torch.arange(end, device=freqs.device) # 位置索引
-        angles = torch.outer(m, freqs).float() # 外积 m * w_i ，生成旋转角度矩阵: (end, d/2)
+    m = torch.arange(end, device=freqs.device) # 位置索引
+    angles = torch.outer(m, freqs).float() # 外积 m * w_i ，生成旋转角度矩阵: (end, d/2)
 
-        # 生成 cos/sin，并重复每个值两次以匹配嵌入维度
-        cos = torch.cos(angles).repeat_interleave(2, dim=-1)  # (end, dim)
-        sin = torch.sin(angles).repeat_interleave(2, dim=-1)
+    # 生成 cos/sin，并重复每个值两次以匹配嵌入维度
+    freqs_cos = torch.cos(angles).repeat_interleave(2, dim=-1)  # (end, dim)
+    freqs_sin = torch.sin(angles).repeat_interleave(2, dim=-1)
 
-        return cos, sin
+    return freqs_cos, freqs_sin
+
 
 # Positional Encoding with RoPE 方式2，采用主流的简化版公式
 def precompute_freqs_cis_simplified(
@@ -313,19 +325,19 @@ class Attention(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
+        hidden_states: torch.Tensor,
         position_embeddings: Tuple[torch.Tensor, torch.Tensor],
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache=False,
         attention_mask: Optional[torch.Tensor] = None,
     ):
     
-        batch_size,seq_len, hidden_size = x.shape
+        batch_size,seq_len, hidden_size = hidden_states.shape
         
         # 0. 生成QKV
-        q = self.q_proj(x) # (B, L, num_q_heads * head_dim)
-        k = self.k_proj(x) # (B, L, num_kv_heads * head_dim)
-        v = self.v_proj(x) # (B, L, num_kv_heads * head_dim)
+        q = self.q_proj(hidden_states) # (B, L, num_q_heads * head_dim)
+        k = self.k_proj(hidden_states) # (B, L, num_kv_heads * head_dim)
+        v = self.v_proj(hidden_states) # (B, L, num_kv_heads * head_dim)
         
         # 1. 分头 
         # 按照 hidden = num_attention_heads * head_dim 对Q分头
@@ -377,11 +389,11 @@ class Attention(nn.Module):
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # 计算注意力分数 (B, num_heads, L, L)
 
             # causal masking: 应用 上三角掩码-inf 以实现自回归 
-            causal_mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device)).unsqueeze(0).unsqueeze(0)  # (1, 1, L, L)
+            causal_mask = torch.tril(torch.ones((seq_len, seq_len), device=hidden_states.device)).unsqueeze(0).unsqueeze(0)  # (1, 1, L, L)
             attn_scores = attn_scores.masked_fill(causal_mask == 0, float('-inf'))  # 值为0的位置设为-inf
 
             # 计算注意力权重
-            attn_probs = F.softmax(attn_scores, dim=-1)  # (B, num_heads, L, L)
+            attn_probs = F.softmax(attn_scores, dim=-1).type_as(q)  # (B, num_heads, L, L)
             attn_probs = self.attn_dropout(attn_probs)   # 应用dropout
 
             # 计算加权值
@@ -391,7 +403,7 @@ class Attention(nn.Module):
         output = output.transpose(1,2).reshape(batch_size, seq_len, self.num_attention_heads * self.head_dim) # 先转置回 (B, L, num_heads, head_dim)，再合并头
         output = self.o_proj(output)  # 最终线性投影. shape: (B, L, hidden_size)
         output = self.residual_dropout(output)  # 应用残差连接的dropout （该Dropout在残差连接之前使用）
-
+        return output, past_kv
 
 # Class FNN
 class FeedForward(nn.Module):
@@ -517,7 +529,7 @@ class MoEGate(nn.Module):
         return topk_idx, topk_weight, aux_loss
 
 
-class MoEFeedForaward(nn.Module):
+class MoEFeedForward(nn.Module):
     def __init__(self,config:MyMindConfig):
         super().__init__()
         self.config=config
@@ -637,7 +649,7 @@ class MyMindBlock(nn.Module):
         # 1. 注意力子层
         normed_states = self.input_rmsnorm(hidden_states) # 归一化
         
-        # 按照Attnetion类的forward方法的参数要求调用  
+        # 调用Attention forward
         attn_output, present_key_value = self.attention(
             hidden_states=normed_states,
             position_embeddings=position_embeddings,
@@ -649,6 +661,7 @@ class MyMindBlock(nn.Module):
 
         # 2. FFN子层
         normed_states = self.post_attention_rmsnorm(hidden_states) # 归一化
+        # 调用FFN forward
         ffn_output = self.ffn(normed_states)
         hidden_states = hidden_states + ffn_output # 残差连接 
 
@@ -677,7 +690,7 @@ class MyMindModel(nn.Module):
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # RoPE 预计算频率
-        self.freqs_cos, self.freqs_sin = precompute_freqs(
+        freqs_cos, freqs_sin = precompute_freqs(
             dim=config.hidden_size // config.num_attention_heads,
             end=config.max_position_embeddings,
             rope_base=config.rope_theta,
@@ -686,8 +699,8 @@ class MyMindModel(nn.Module):
 
         # 注册为buffer（非参数），使其成为模型的一部分但不参与训练（不保存到 checkpoint 的模型 buffer）
         # 在attention forward中可以通过self.freqs_cos/self.freqs_sin访问
-        self.register_buffer("freqs_cos", self.freqs_cos, persistent=False)
-        self.register_buffer("freqs_sin", self.freqs_sin, persistent=False) 
+        self.register_buffer("freqs_cos", freqs_cos, persistent=False)
+        self.register_buffer("freqs_sin", freqs_sin, persistent=False) 
 
     def forward(
             self,
@@ -749,9 +762,9 @@ class MyMindModel(nn.Module):
 
         # 如果使用MoE，收集每层的aux_loss并求和返回以便训练使用
         aux_loss = sum(
-            layer.mlp.aux_loss
+            layer.ffn.aux_loss
             for layer in self.layers
-            if isinstance(layer.mlp, MOEFeedForward)
+            if isinstance(layer.ffn, MoEFeedForward)
         )
 
         # 后续的Linear与Softmax层放在MyMindForCausalLM中实现
@@ -762,8 +775,9 @@ class MyMindModel(nn.Module):
 class MyMindForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = MyMindConfig # 将该模型绑定前面定义的 配置类
 
-    def __init__(self, config:MyMindConfig):  
-        super().__init__()
+    def __init__(self, config:MyMindConfig=None):
+        self.config = config or MyMindConfig()  # 若没传入则使用默认的config
+        super().__init__(self.config)
         self.model = MyMindModel(config)
 
         # 输出层，将shape从(batch_size, seq_len, hidden_size)映射到(batch_size, seq_len, vocab_size)

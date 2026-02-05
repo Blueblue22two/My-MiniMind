@@ -36,6 +36,18 @@ def print_torch_info():
     print(f"\nRecommended device: {device}")
     print(f"Current device tensor would use: {torch.tensor([1]).to(device).device}")
 
+        # ===== 新增：检查 transformers 库 =====
+    try:
+        import transformers
+        print(f"\n✅ Hugging Face Transformers installed: {transformers.__version__}")
+        
+    except ImportError:
+        print("\n❌ Hugging Face Transformers NOT installed")
+        print("   To install: pip install transformers")
+    except Exception as e:
+        print(f"\n⚠️  Transformers installed but failed basic test: {type(e).__name__}: {e}")
+        print("   This may indicate a partial/corrupted installation.")
+
 # 运行检测
 if __name__ == "__main__":
     print_torch_info()

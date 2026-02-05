@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# ignore the training dataset
+dataset/pretrain_hq.jsonl
+dataset/sft_mini_512.jsonl

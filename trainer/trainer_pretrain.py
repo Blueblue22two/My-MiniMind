@@ -5,7 +5,6 @@
 import os
 import sys
 
-
 __package__ = "trainer"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -43,7 +42,6 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
     - Learning rate调整: 余弦退火
     - 梯度累积
     - 权重精度混合：
-
 
     Args:
         epoch: 当前训练轮次
@@ -269,7 +267,7 @@ if __name__ == "__main__":
     os.makedirs(args.save_dir, exist_ok=True)  # 确保保存目录存在
 
     # 创建MiniMind模型配置
-    lm_config = MokioMindConfig(
+    lm_config = MyMindConfig(
         hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers,use_moe=bool(args.use_moe)
     )
 
@@ -329,7 +327,7 @@ if __name__ == "__main__":
     - 优化器: AdamW优化器
     - 缩放器: 混合精度训练的梯度缩放
     """
-    # 初始化模型和分词器
+    # 初始化模型和tokenizer
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
 
     train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)

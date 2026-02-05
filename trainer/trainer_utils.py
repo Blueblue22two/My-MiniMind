@@ -115,6 +115,7 @@ def lm_checkpoint(
             return ckp_data
         return None
 
+
 # 初始化模型
 def init_model(
     lm_config,
@@ -124,18 +125,18 @@ def init_model(
     device="cuda",
 ):
     from transformers import AutoTokenizer
-    from model.MokioModel import MokioMindForCausalLM
+    from model.Model import MyMindForCausalLM
 
-    # 如果没有指定 tokenizer_path，使用项目根目录下的 model 文件夹
+    # 如果没有指定 tokenizer_path，使用项目根目录下的 /model 文件夹中的tokenier文件
     if tokenizer_path is None:
-        # 获取当前文件所在目录的父目录（项目根目录）
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(current_dir)
+       
+        current_dir = os.path.dirname(os.path.abspath(__file__))  # 获取当前文件所在目录的父目录（项目根目录）
+        project_root = os.path.dirname(current_dir) 
         tokenizer_path = os.path.join(project_root, "model")
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path) # 载入本地tokenizer
 
-    model = MokioMindForCausalLM(lm_config)
+    model = MyMindForCausalLM(lm_config)
 
     if from_weight != "none":
         moe_suffix = (
