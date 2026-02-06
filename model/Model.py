@@ -806,9 +806,11 @@ class MyMindForCausalLM(PreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100)
+            # shift logits and labels for next-token prediction
+            shift_logits = logits[..., :-1, :].contiguous() # 将logits向左移动一位，去掉最后一个位置
+            shift_labels = labels[..., 1:].contiguous() # 将labels向右移动一位，去掉第一个位置
+            # 计算交叉熵损失，忽略标签为-100的位置1
+            loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100) 
 
         output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)
         output.aux_loss = aux_loss

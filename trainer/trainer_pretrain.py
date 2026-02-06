@@ -52,7 +52,6 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
         start_step: 起始步数（用于断点续训）
         swandb: 实验跟踪工具
     """
-    loss_func = nn.CrossEntropyLoss(reduction="none",ignore_index=-100)  # 定义交叉熵损失函数，忽略标签为-100的位置
     start_time = time.time() # 记录训练时间
 
     # 1. 前向传播
@@ -102,10 +101,10 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
                 f"Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}) loss:{current_loss:.6f} lr:{current_lr:.12f} epoch_Time:{eta_min}min:"
             )
 
-            # 记录到实验跟踪系统
+            # 记录到swanlab实验跟踪系统
             if wandb:
                 wandb.log(
-                    {"loss": current_loss, "lr": current_lr, "epoch_Time": eta_min}
+                    {"loss": current_loss, "lr": current_lr, "epoch_Time": eta_min} # 记录当前损失、学习率和时间
                 )
 
         # 定期保存检查点
@@ -129,6 +128,9 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             # 将float32参数转为float16，减少存储空间
             state_dict = {k: v.half() for k, v in state_dict.items()}
             torch.save(state_dict, ckp)
+            
+            # 获取当前wandb运行ID
+            current_wandb_id = os.getenv("SWANLAB_RUN_ID") if wandb else None
 
             # 保存完整训练状态
             lm_checkpoint(
@@ -140,7 +142,7 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
                 epoch=epoch,
                 step=step,
                 wandb=wandb,
-                andb_id=wandb.run.id if wandb else None,
+                wandb_id=current_wandb_id,
                 save_dir="checkpoints",
             )
 
@@ -159,10 +161,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save_weight", default="pretrain", type=str, help="保存权重的前缀名"
     )
+    
+    # epochs
     parser.add_argument(
         "--epochs", type=int, default=1, help="训练轮数（建议1轮zero或2-6轮充分训练）"
     )
+    # batch size
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
+    # learning rate
     parser.add_argument("--learning_rate", type=float, default=5e-4, help="初始学习率")
 
     # ========== 硬件和性能参数 ==========
@@ -285,7 +291,6 @@ if __name__ == "__main__":
 
     # ========== 4. 配置WandB实验跟踪 ==========
     """
-    📚 实验跟踪系统知识点：
     - WandB: 实验管理平台，记录训练过程
     - SwanLab: 国产替代方案
     - 支持断点续训时恢复到同一个实验
@@ -295,7 +300,6 @@ if __name__ == "__main__":
         # 使用SwanLab作为WandB的替代
         import swanlab as wandb
 
-        # 📚 实验恢复知识点
         # 如果有检查点数据，获取之前的wandb_id来恢复实验
         wandb_id = ckp_data.get("wandb_id") if ckp_data else None
         resume = "must" if wandb_id else None  # 必须恢复到指定实验
@@ -303,7 +307,10 @@ if __name__ == "__main__":
         # 构建实验名称，包含关键超参数
         wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
         wandb.init(
-            project=args.wandb_project, name=wandb_run_name, id=wandb_id, resume=resume
+            project=args.wandb_project,
+            name=wandb_run_name,
+            id=wandb_id,
+            resume=resume,
         )
 
     # ========== 5. 定义模型、数据、优化器 ==========
@@ -376,3 +383,7 @@ if __name__ == "__main__":
                 pin_memory=True,
             )
             train_epoch(epoch, loader, len(loader), 0, wandb)
+        
+        # 训练结束，关闭wandb
+        if wandb and is_main_process():
+            wandb.finish()

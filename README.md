@@ -8,9 +8,9 @@ All dependencies in `pyproject.toml`.
 `pip install uv`. 
 
 2. 安装所有依赖，通过uv自动安装`pyproject.toml`中所有依赖项。  
-`uv sync`
+`uv sync`  
 
-    进入虚拟环境
+    进入虚拟环境  
 `source .venv/bin/activate`  
 
 3. 将需要的使用的训练数据放到`dataset`文件夹中。  
@@ -33,4 +33,6 @@ All dependencies in `pyproject.toml`.
 
 ## 3. 预训练  
 调用预训练并启动swanlab记录日志   
-`uv run python trainer/trainer_pretrain.py --use_wandb`  
+`uv run python trainer/trainer_pretrain.py --use_wandb`    
+需要注册swanlab账号，用下面指令登陆. 
+`swanlab login`  

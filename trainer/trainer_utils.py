@@ -13,6 +13,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import Sampler
 
+# 获取
 def get_model_params(model, config):
     total = sum(p.numel() for p in model.parameters()) / 1e6
     n_routed = getattr(config, 'n_routed_experts', getattr(config, 'num_experts', 0))

@@ -9,12 +9,11 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false" # 关闭tokenizer的并行加速�
 class PretrainDataset(Dataset):
     """
         处理Pretrain Dataset
+            实现dataset内定的方法：
+            1. _len_ 返回数据集大小
+            2. __getitem__定义获取单个数据的方法 
     """
-
-    # 实现dataset内定的方法：
-    # 1. _len_ 返回数据集大小
-    # 2. __getitem__定义获取单个数据的方法 
-
+    
     def __init__(self, data_path, tokenizer, max_length=512):
         super().__init__()
         self.data_path = data_path
