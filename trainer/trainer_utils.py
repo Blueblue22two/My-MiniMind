@@ -1,4 +1,11 @@
+"""
+训练工具函数集合
+"""
 import os
+import sys
+__package__ = "trainer"
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import random
 import math
 import numpy as np
@@ -6,11 +13,23 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import Sampler
 
+def get_model_params(model, config):
+    total = sum(p.numel() for p in model.parameters()) / 1e6
+    n_routed = getattr(config, 'n_routed_experts', getattr(config, 'num_experts', 0))
+    n_active = getattr(config, 'num_experts_per_tok', 0)
+    n_shared = getattr(config, 'n_shared_experts', 0)
+    expert = sum(p.numel() for n, p in model.named_parameters() if 'mlp.experts.0.' in n) / 1e6
+    shared_expert = sum(p.numel() for n, p in model.named_parameters() if 'mlp.shared_experts.0.' in n) / 1e6
+    base = total - (expert * n_routed) - (shared_expert * n_shared)
+    active = base + (expert * n_active) + (shared_expert * n_shared)
+    if active < total: Logger(f'Model Params: {total:.2f}M-A{active:.2f}M')
+    else: Logger(f'Model Params: {total:.2f}M')
+
 # 检查是否是主进程
 def is_main_process():
     return not dist.is_initialized() or dist.get_rank() == 0
 
-# 日志
+# 日志函数，打印病保存日志仅在主进程执行
 def Logger(content):
     if is_main_process():
         print(content)
@@ -29,7 +48,6 @@ def init_distributed_mode():
     torch.cuda.set_device(local_rank)
     return local_rank
 
-# 设置种子
 def setup_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -136,7 +154,7 @@ def init_model(
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path) # 载入本地tokenizer
 
-    model = MyMindForCausalLM(lm_config)
+    model = MyMindForCausalLM(lm_config) # 根据配置初始化模型（注意是调用Class ForCausalLM而不是 Class Model）  
 
     if from_weight != "none":
         moe_suffix = (

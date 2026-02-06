@@ -668,7 +668,7 @@ class MyMindBlock(nn.Module):
         return hidden_states, present_key_value if use_cache else None    
 
 
-# Model组合
+# 组合Model的基础部分
 class MyMindModel(nn.Module):
     def __init__(self, config:MyMindConfig):
         super().__init__()
@@ -677,7 +677,7 @@ class MyMindModel(nn.Module):
         self.config = config
         # 封装所有Transformer Blocks
         self.layers = nn.ModuleList(
-            [MyMindBlock(layer_id=i, config=config) for i in range(config.num_hidden_layers)] # 创建并使用ModuleList存储所有Transformer Block
+            [MyMindBlock(layer_id=l, config=config) for l in range(self.num_hidden_layers)] # 创建并使用ModuleList存储所有Transformer Block
         ) 
 
         # Token embedding
@@ -710,18 +710,14 @@ class MyMindModel(nn.Module):
             use_cache:bool=False,
             **kwargs
     ):
-        """
-            Args:
-                input_ids: 经过tokenizer输入的token ids，形状为 (batch_size, seq_len)
-        """
-        # input_ids -> Embedding + Dropout -> N-layers block -> RMSNorm
+        # Steps: input_ids -> Embedding + Dropout -> N-layers block -> RMSNorm
         batch_size, seq_len = input_ids.shape
 
         # 兼容性检查：某些框架会传入包含.layers属性的对象，视为不携带past信息
         if hasattr(past_key_values, 'layers'):
             past_key_values = None
 
-        # past_key_values为blocksz中每层的(past_k, past_v)列表，如果为None则创建与层数相同的None列表
+        # past_key_values为blocks中每层的(past_k, past_v)列表，如果为None则创建与层数相同的None列表
         past_key_values = past_key_values or [None] * len(self.layers)
 
         # 计算start_pos：如果存在past，则start_pos为已有past序列长度
@@ -741,10 +737,8 @@ class MyMindModel(nn.Module):
 
         # 2. 逐层通过Transformer Blocks
         present_KVs = [] # 用于存储每层的缓存KV
-
         # 遍历每个Transformer Block及其对应的past_key_value
         for layer_idx,(layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
-            
             # 调用每个Block的forward方法
             hidden_states, present = layer(  
                 hidden_states=hidden_states,
@@ -753,25 +747,24 @@ class MyMindModel(nn.Module):
                 use_cache=use_cache,
                 attention_mask=attention_mask
             )
-            # 如果use_cache为True，则存储每层的present_key_value
-            if use_cache:
-                present_KVs.append(present)
+            present_KVs.append(present)
 
         # 3. RMSNorm 
         hidden_states = self.norm(hidden_states)  # shape: (batch_size, seq_len, hidden_size)
 
-        # 如果使用MoE，收集每层的aux_loss并求和返回以便训练使用
-        aux_loss = sum(
-            layer.ffn.aux_loss
-            for layer in self.layers
-            if isinstance(layer.ffn, MoEFeedForward)
+        # 如果使用MoE，遍历收集每个MoE层的aux_loss为一个tensor列表，并求和
+        aux_loss = sum([
+            l.ffn.aux_loss
+            for l in self.layers
+            if isinstance(l.ffn, MoEFeedForward)],
+            hidden_states.new_zeros(1).squeeze()
         )
 
         # 后续的Linear与Softmax层放在MyMindForCausalLM中实现
         return hidden_states, present_KVs, aux_loss
 
 
-# 组合MyMindModel与线性+Softmax层
+# 将Model部分与 线性输出 + Softmax层 + loss计算 进一步封装，组成最终的模型
 class MyMindForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = MyMindConfig # 将该模型绑定前面定义的 配置类
 
@@ -790,6 +783,7 @@ class MyMindForCausalLM(PreTrainedModel, GenerationMixin):
         self,
         input_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None, # label data
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
         logits_to_keep: Union[int, torch.Tensor] = 0, # 需要保留多少位的logits进行计算
@@ -810,9 +804,12 @@ class MyMindForCausalLM(PreTrainedModel, GenerationMixin):
         # 自回归生成时，仅需要输入序列中最后logits_to_keep个位置的logits进行预测
         logits = self.lm_head(hidden_states[:, slice_indices, :]) 
 
-        return CausalLMOutputWithPast(
-            logits=logits,
-            past_key_values=past_kvs,
-            hidden_states=hidden_states,
-            aux_loss=aux_loss
-        )
+        loss = None
+        if labels is not None:
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100)
+
+        output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)
+        output.aux_loss = aux_loss
+        return output

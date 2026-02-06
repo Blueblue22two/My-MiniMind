@@ -37,29 +37,29 @@ warnings.filterwarnings("ignore")
 
 def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
     """
-    Pretraining 实现预训练的核心训练循环
-    - Loss function: CE
-    - Learning rate调整: 余弦退火
-    - 梯度累积
-    - 权重精度混合：
+    Pretraining 实现预训练的核心训练循环：
+        - Loss function: CrossEntropyLos
+        - Learning rate调整: 余弦退火(动态调整学习率)
+        - 梯度累积: 每隔accumulation_steps步更新一次参数,模拟更大batch size
+        - 梯度裁剪: 防止梯度爆炸
+        - 权重精度混合: 使用bfloat16或float16加速训练
+        - 定期保存检查点: 保存模型和训练状态，支持断点续训
 
     Args:
         epoch: 当前训练轮次
         loader: 数据加载器 DataLoader
         iters: 一个epoch的最大迭代次数，即本轮epoch中训练多少个batch
         start_step: 起始步数（用于断点续训）
-        wandb: 实验跟踪工具
+        swandb: 实验跟踪工具
     """
-    loss_func = nn.CrossEntropyLoss(reduction="none")
-    start_time = time.time() # 计算训练时间
-    total_loss = 0.0; # 统计训练中的total损失值
+    loss_func = nn.CrossEntropyLoss(reduction="none",ignore_index=-100)  # 定义交叉熵损失函数，忽略标签为-100的位置
+    start_time = time.time() # 记录训练时间
 
     # 1. 前向传播
     # 遍历批次数据， step接受loader返回的index
-    for step,(X,Y,loss_mask) in enumerate(loader,start = start_step+1):
-        X = X.to(args.device) # 将输入数据放入到指定设备中
-        Y = Y.to(args.device) # 将label放入到指定设备中
-        loss_mask = loss_mask.to(args.device)
+    for step,(X,Y) in enumerate(loader,start = start_step+1):
+        X = X.to(args.device) # input_ids输入数据序列
+        Y = Y.to(args.device) # labels标签序列
 
         # 动态学习率-余弦退火
         lr = get_lr(current_step=epoch*iters+step, total_steps=args.epochs*iters, lr= args.learning_rate)
@@ -67,32 +67,21 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
         # optimizer.param_groups: 包含所有参数组的列表
         # 每个参数组可以有不同的学习率、权重衰减等
         for param_group in optimizer.param_groups:
-            param_group["lr"]=lr # 设置优化器中的学习率不要改动，就按照设定的来 
+            param_group["lr"]=lr # 要求优化器中的学习率不要改动，按照args中的来 
         
-        # 2. 计算Loss
+    # 2. 计算Loss
         # 混合权重精度训练, 调用autocast_ctx会自动管理合适的权重精度类型
         with autocast_ctx:
-            res = model(X)
-            loss = loss_func(
-                    # res.logits.shape = [batch_size, seq_len, vocab_size]
-                    res.logits.view(-1, res.logits.size(-1)),  # [batch*seq_len, vocab_size]
-                    Y.view(-1)                                 # [batch*seq_len]
-                ).view(Y.size())  # 恢复为 [batch_size, seq_len]
-            
-            # 基于loss_mas选择需要进行计算loss的位置，求出最终有效token的平均loss （有效位置=1.无效=0)
-            loss = (loss * loss_mask).sum() / loss_mask.sum()
+            res = model(input_ids = X,labels=Y)
+            loss = res.loss + res.aux_loss if hasattr(res, "aux_loss") else res.loss # 如果模型输出包含aux_loss，则将其加到主loss上
+            loss = loss/args.accumulation_steps # 梯度累积: 每一次loss值除以steps，取平均
 
-            # MoE损失
-            loss+=res.aux_loss
-
-            # 梯度累积:除以steps取平均
-            loss = loss/args.accumulation_steps
-
-        # 3. 反向传播
-        scaler.scale(loss).backward # 调用scaler实现混合精度训练+loss缩放
+    # 3. 反向传播
+        scaler.scale(loss).backward() # 调用scaler实现混合精度训练+loss缩放
         
-        # 4. 梯度下降
-        if (step+1) % args.accumulation_steps == 0: # 确保梯度累积完成一次循环后(走完accumulation_steps后)进行梯度下降更新参数
+    # 4. 梯度下降
+        # if条件: 确保梯度累积完成一次循环后(走完accumulation_steps后)再进行梯度下降更新参数
+        if (step+1) % args.accumulation_steps == 0: 
             # 还原梯度真实值，是为了梯度裁剪
             scaler.unscale_(optimizer) # 将optimizer管理的.grad都除以scale_factor
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -100,15 +89,13 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             # 安全更新参数,调用scaler.step而不是optimizer.step是为了正确的缩放梯度
             scaler.step(optimizer)
             scaler.update()
-
             optimizer.zero_grad(set_to_none=True) # 更新参数后，再释放存储梯度的内存(设为none比设置为0更节省内存)
         
-        # 日志打印epoch,loss和lr
+        # 定期日志打印 epoch,loss和lr
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
             current_loss = loss.item() * args.accumulation_steps  # 恢复真实损失值
             current_lr = optimizer.param_groups[-1]["lr"]  # 获取当前学习率
-
             eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
 
             Logger(
@@ -153,6 +140,7 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
                 epoch=epoch,
                 step=step,
                 wandb=wandb,
+                andb_id=wandb.run.id if wandb else None,
                 save_dir="checkpoints",
             )
 

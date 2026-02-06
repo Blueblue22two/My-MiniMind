@@ -8,7 +8,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false" # 关闭tokenizer的并行加速�
 
 class PretrainDataset(Dataset):
     """
-        PretrainDataset
+        处理Pretrain Dataset
     """
 
     # 实现dataset内定的方法：
@@ -41,35 +41,25 @@ class PretrainDataset(Dataset):
         sample = self.samples[idx] # 获取单个样本
         
         # 1. tokenize
-        # 优化思路：每次 __getitem__ 都调用 tokenizer，速度慢。
-        # 改进：在 __init__ 中预 tokenize 所有样本，存为 input_ids 列表。
         encoding = self.tokenizer(
-            str(sample['text']), # 对文本进行编码.先转字符串，防止报错
-            max_length=self.max_length,
-            padding='max_length', # 补齐到最大长度
-            truncation=True, # 超过最大长度则截断
-            return_tensors='pt' # 返回pytorch的tensor
-        ) # 返回形状 (batch_size=1, seq_len)
+            str(sample['text']), 
+            add_special_tokens=False, # 不添加特殊token，后续手动添加
+            max_length=self.max_length - 2,  # 留出位置给特殊token(bos 和 eos)
+            truncation=True # 超过最大长度则截断
+        ).input_ids # 只获取input_ids部分,确保为一维列表
 
+        # 2. 构造输入序列input_ids # shape: (max_length,)   
+        # 手动添加两个特殊token
+        encoding = [self.tokenizer.bos_token_id] + encoding + [self.tokenizer.eos_token_id]
+        # padding到最大长度
+        input_ids = encoding + [self.tokenizer.pad_token_id] * (self.max_length - len(encoding))
+        # 列表转换为tensor
+        input_ids = torch.tensor(input_ids, dtype=torch.long)  
 
-        # 2. 转化为一维tensor
-        input_ids = encoding['input_ids'].squeeze(0) # 去掉batch维度
+        # 3. 构造标签序列
+        labels = input_ids.clone()
+        # 将其中 所有padding部分 的标签设置为-100，计算loss时忽略这些位置 
+        # 交叉熵损失种的参数nn.CrossEntropyLoss(ignore_index=-100)，会忽略这些值为-100的位置loss计算
+        labels[labels == self.tokenizer.pad_token_id] = -100
 
-        # 生成loss mask(与input_ids形状相同的bool张量，pad部分为0，其余为1)
-        # 作用：在计算损失时，忽略 padding 位置的预测，避免模型学习“预测 pad token”。
-        loss_mask = (input_ids != self.tokenizer.pad_token_id)
-
-        # 3. 构造输入和标签
-        X = torch.tensor(input_ids[:-1], dtype=torch.long) # 构造输入序列
-        Y = torch.tensor(input_ids[1:], dtype=torch.long) # 构造标签序列，右移一位
-
-        # 确保loss_mask与Y在位置上对齐（去掉第一个位置），避免后续损失函数计算错误
-        # loss值是X与Y计算误差，Y是真实标签所以每一项都直接依赖于Y而不是X，因此loss_mask应该与Y对齐
-        # Example:
-        # input_ids: [A, B, C, PAD, PAD]
-        # X:         [A, B, C, PAD]
-        # Y:         [B, C, PAD, PAD]
-        # loss_mask: [1, 1, 1, 0] -> 应该与Y对齐
-        # 否则在 i=2 时间步/位置上，模型预测 C 的损失会被错误地忽略，因为 loss_mask 在该位置是 0。
-        loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
-        return X, Y, loss_mask
+        return input_ids, labels

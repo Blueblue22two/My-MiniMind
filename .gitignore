@@ -12,3 +12,9 @@ wheels/
 # ignore the training dataset
 dataset/pretrain_hq.jsonl
 dataset/sft_mini_512.jsonl
+
+# ignore the checkpoints and output weight files
+checkpoints/
+out/
+*.pt
+*.pth

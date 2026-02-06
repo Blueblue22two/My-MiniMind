@@ -29,3 +29,8 @@ All dependencies in `pyproject.toml`.
 
 下载`pretrain_hq.jsonl`的数据集到路径`/root/autodl-tmp/My-MiniMind/dataset`中  
 `modelscope download --dataset gongjy/minimind_dataset pretrain_hq.jsonl --local_dir /root/autodl-tmp/My-MiniMind/dataset`
+
+
+## 3. 预训练  
+调用预训练并启动swanlab记录日志   
+`uv run python trainer/trainer_pretrain.py --use_wandb`  
