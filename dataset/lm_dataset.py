@@ -1,9 +1,10 @@
 import json
 import torch
 from torch.utils.data import Dataset
-import torch
-import os
 from datasets import load_dataset
+import os
+import random
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # 关闭tokenizer的并行加速，避免报错
 

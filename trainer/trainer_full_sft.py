@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
-from model.model_minimind import MiniMindConfig
+from model.Model import MyMindConfig 
 from dataset.lm_dataset import SFTDataset
 from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
 
@@ -42,8 +42,10 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             loss = res.loss + res.aux_loss
             loss = loss / args.accumulation_steps
 
+        # 3. 反向传播
         scaler.scale(loss).backward()
 
+        # 4. 梯度下降
         if (step + 1) % args.accumulation_steps == 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -52,6 +54,7 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
 
+        # 5. 日志记录和模型保存
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
             current_loss = loss.item() * args.accumulation_steps
@@ -59,10 +62,16 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             current_logits_loss = current_loss - current_aux_loss
             current_lr = optimizer.param_groups[-1]['lr']
             eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
+
             Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, logits_loss: {current_logits_loss:.4f}, aux_loss: {current_aux_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
-            if wandb: wandb.log({"loss": current_loss, "logits_loss": current_logits_loss, "aux_loss": current_aux_loss, "learning_rate": current_lr, "epoch_time": eta_min})
+            if wandb: 
+                wandb.log(
+                    {"loss": current_loss, "logits_loss": current_logits_loss, "aux_loss": current_aux_loss, "learning_rate": current_lr, "epoch_time": eta_min},
+                    step=epoch * iters + step
+                )
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
+
             model.eval()
             moe_suffix = '_moe' if lm_config.use_moe else ''
             ckp = f'{args.save_dir}/{args.save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
@@ -70,8 +79,22 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             raw_model = getattr(raw_model, '_orig_mod', raw_model)
             state_dict = raw_model.state_dict()
             torch.save({k: v.half().cpu() for k, v in state_dict.items()}, ckp)
-            lm_checkpoint(lm_config, weight=args.save_weight, model=model, optimizer=optimizer, 
-                         epoch=epoch, step=step, wandb=wandb, save_dir='../checkpoints', scaler=scaler)
+
+            # 获取当前wandb运行ID
+            current_wandb_id = os.getenv("SWANLAB_RUN_ID") if wandb else None
+
+            lm_checkpoint(
+                lm_config,
+                weight=args.save_weight,
+                model=model,
+                optimizer=optimizer, 
+                epoch=epoch, 
+                step=step,
+                wandb=wandb,
+                wandb_id=current_wandb_id,
+                save_dir='../checkpoints',
+                scaler=scaler
+            )
             model.train()
             del state_dict
 
@@ -80,11 +103,15 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind Full SFT")
-    parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
+
+    parser.add_argument("--save_dir", type=str, default="out", help="模型保存目录") 
+
     parser.add_argument('--save_weight', default='full_sft', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=16, help="batch size")
+
     parser.add_argument("--learning_rate", type=float, default=1e-6, help="初始学习率")
+    
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
     parser.add_argument("--num_workers", type=int, default=8, help="数据加载线程数")
@@ -96,8 +123,12 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=340, type=int, help="训练的最大截断长度（中文1token≈1.5~1.7字符）")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument("--data_path", type=str, default="../dataset/sft_mini_512.jsonl", help="训练数据路径")
-    parser.add_argument('--from_weight', default='pretrain', type=str, help="基于哪个权重训练，为none则不基于任何权重训练")
+    # SFT 训练数据集路径
+    parser.add_argument("--data_path", type=str, default="dataset/sft_mini_512.jsonl", help="训练数据路径")
+
+    # SFT基于pre train权重进行微调
+    parser.add_argument('--from_weight', default='pretrain', type=str, help="基于哪个权重训练，为none则不基于任何权重训练") 
+    
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Full-SFT", help="wandb项目名")
@@ -110,9 +141,9 @@ if __name__ == "__main__":
     setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
     
     # ========== 2. 配置目录、模型参数、检查ckp ==========
-    os.makedirs(args.save_dir, exist_ok=True)
-    lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
-    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
+    os.makedirs(args.save_dir, exist_ok=True) # 创建保存目录
+    lm_config = MyMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
+    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='checkpoints') if args.from_resume==1 else None
     
     # ========== 3. 设置混合精度 ==========
     device_type = "cuda" if "cuda" in args.device else "cpu"
@@ -129,11 +160,15 @@ if __name__ == "__main__":
         wandb.init(project=args.wandb_project, name=wandb_run_name, id=wandb_id, resume=resume)
     
     # ========== 5. 定义模型、数据、优化器 ==========
-    model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
+    # 初始化模型.权重 和 tokenizer，基于预训练权重或随机初始化
+    model, tokenizer = init_model(lm_config, args.from_weight, device=args.device) 
+
+    # 使用torch.compile加速（如果启用）
     if args.use_compile == 1:
         model = torch.compile(model)
         Logger('torch.compile enabled')
-    train_ds = SFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
+
+    train_ds = SFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len) # 加载SFT数据集
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -159,6 +194,7 @@ if __name__ == "__main__":
         skip = start_step if (epoch == start_epoch and start_step > 0) else 0
         batch_sampler = SkipBatchSampler(train_sampler or indices, args.batch_size, skip)
         loader = DataLoader(train_ds, batch_sampler=batch_sampler, num_workers=args.num_workers, pin_memory=True)
+
         if skip > 0: 
             Logger(f'Epoch [{epoch + 1}/{args.epochs}]: 跳过前{start_step}个step，从step {start_step + 1}开始')
             train_epoch(epoch, loader, len(loader) + skip, start_step, wandb)
@@ -167,3 +203,8 @@ if __name__ == "__main__":
     
     # ========== 9. 清理分布进程 ==========
     if dist.is_initialized(): dist.destroy_process_group()
+
+            
+    # 训练结束，关闭wandb
+    if wandb and is_main_process():
+        wandb.finish()

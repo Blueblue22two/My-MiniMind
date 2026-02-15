@@ -36,3 +36,5 @@ All dependencies in `pyproject.toml`.
 `uv run python trainer/trainer_pretrain.py --use_wandb`    
 需要注册swanlab账号，用下面指令登陆. 
 `swanlab login`  
+
+uv run python trainer/trainer_full_sft.py --use_wandb

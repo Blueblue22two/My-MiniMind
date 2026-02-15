@@ -135,38 +135,43 @@ def lm_checkpoint(
         return None
 
 
-# 初始化模型
 def init_model(
     lm_config,
-    from_weight="pretrain",
+    from_weight="pretrain", # 训练标识
     tokenizer_path=None,
     save_dir="out",
     device="cuda",
 ):
+    """
+    初始化模型和tokenizer
+    - lm_config: 模型配置对象，包含模型结构和参数设置
+    - from_weight: 预训练权重的标识，默认为"pretrain"，如果为"none"则不加载任何预训练权重
+    - tokenizer_path: tokenizer文件的路径，如果为None则默认使用项目根目录下的 /model 文件夹中的tokenizer文件
+    - save_dir: 预训练权重文件的保存目录，默认为"out"
+    - device: 模型加载到的设备，默认为"cuda" 
+    """
     from transformers import AutoTokenizer
     from model.Model import MyMindForCausalLM
-
+    
     # 如果没有指定 tokenizer_path，使用项目根目录下的 /model 文件夹中的tokenier文件
     if tokenizer_path is None:
-       
         current_dir = os.path.dirname(os.path.abspath(__file__))  # 获取当前文件所在目录的父目录（项目根目录）
         project_root = os.path.dirname(current_dir) 
         tokenizer_path = os.path.join(project_root, "model")
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path) # 载入本地tokenizer
-
     model = MyMindForCausalLM(lm_config) # 根据配置初始化模型（注意是调用Class ForCausalLM而不是 Class Model）  
 
+    # 根据from_weight参数加载预训练权重，如果是"none"则不加载任何权重，直接使用随机初始化的模型进行训练
     if from_weight != "none":
         moe_suffix = (
             "_moe" if hasattr(lm_config, "use_moe") and lm_config.use_moe else ""
         )
         weight_path = (
-            f"{save_dir}/{from_weight}_{lm_config.hidden_size}{moe_suffix}.pth"
+            f"{save_dir}/{from_weight}_{lm_config.hidden_size}{moe_suffix}.pth" # 根据from_weight参数构造预训练权重文件的路径，例如 "out/pretrain_512.pth" 或 "out/pretrain_512_moe.pth"
         )
-
-        weights = torch.load(weight_path, map_location=device)
-
+        # 加载预训练权重到模型中，使用map_location参数确保权重加载到指定的设备上（例如GPU或CPU）
+        weights = torch.load(weight_path, map_location=device) 
         model.load_state_dict(weights, strict=False)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

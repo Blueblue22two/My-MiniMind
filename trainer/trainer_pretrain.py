@@ -104,7 +104,8 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             # 记录到swanlab实验跟踪系统
             if wandb:
                 wandb.log(
-                    {"loss": current_loss, "lr": current_lr, "epoch_Time": eta_min} # 记录当前损失、学习率和时间
+                    {"loss": current_loss, "lr": current_lr, "epoch_Time": eta_min},
+                    step=epoch * iters + step
                 )
 
         # 定期保存检查点
@@ -118,7 +119,7 @@ def train_epoch(epoch:int, loader, iters:int, start_step=0, wandb=None):
             ckp = f"{args.save_dir}/{args.save_weight}_{lm_config.hidden_size}{moe_suffix}.pth"
 
             # 📚 分布式模型保存知识点
-            # DDP模型需要通过.module访问真正的模型
+            # DDP训练后，模型需要通过.module访问真正的模型
             if isinstance(model, torch.nn.parallel.DistributedDataParallel):
                 state_dict = model.module.state_dict()
             else:
@@ -212,9 +213,10 @@ if __name__ == "__main__":
         default="dataset/pretrain_hq.jsonl",
         help="预训练数据路径",
     )
+
     parser.add_argument(
         "--from_weight",
-        default="none",
+        default="none", # 这里选择none表示从头开始训练，不加载任何预训练权重    
         type=str,
         help="基于哪个权重训练，为none则从头开始",
     )
@@ -325,7 +327,7 @@ if __name__ == "__main__":
     # 初始化模型和tokenizer
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
 
-    train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
+    train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len) # 加载预训练数据集
 
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
 

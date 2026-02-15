@@ -461,7 +461,7 @@ class MoEGate(nn.Module):
         self.reset_parameters()
         
     def reset_parameters(self) -> None:
-		    # Kaiming初始化，也叫He初始化，高效初始化权重
+        # Kaiming初始化，也叫He初始化，高效初始化权重
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
     def forward(self, hidden_states):
