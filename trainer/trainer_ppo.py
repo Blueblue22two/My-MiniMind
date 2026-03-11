@@ -185,9 +185,10 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
             ref_logp_tokens = F.log_softmax(ref_logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)  # [B, P+R-1]
             ref_logp = (ref_logp_tokens * final_mask).sum(dim=1)  # [B]
 
-        # KL散度
+        # KL散度（测试）
         kl = (actor_logp - old_logp).mean()  # scalar
-        # ref model的KL散度
+        
+        # KL散度 （ref）
         kl_ref = (actor_logp - ref_logp).mean()  # scalar
         
         ratio = torch.exp(actor_logp - old_logp)  # [B]
@@ -283,7 +284,7 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind PPO (Proximal Policy Optimization)")
-    parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default="out", help="模型保存目录")
     parser.add_argument('--save_weight', default='ppo_actor', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=2, help="batch size")
@@ -301,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
     parser.add_argument('--max_seq_len', default=66, type=int, help="Prompt最大长度")
     parser.add_argument("--max_gen_len", type=int, default=1536, help="生成的最大长度")
-    parser.add_argument("--data_path", type=str, default="../dataset/rlaif-mini.jsonl", help="RLAIF数据路径")
+    parser.add_argument("--data_path", type=str, default="dataset/rlaif-mini.jsonl", help="RLAIF数据路径")
     parser.add_argument("--clip_epsilon", type=float, default=0.1, help="PPO裁剪参数")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Value function系数")
     parser.add_argument("--kl_coef", type=float, default=0.02, help="KL散度惩罚系数")
@@ -309,7 +310,8 @@ if __name__ == "__main__":
     parser.add_argument("--update_old_actor_freq", type=int, default=4, help="更新old_actor_model的频率")
     
     # Reward model
-    parser.add_argument("--reward_model_path", type=str, default="../../internlm2-1_8b-reward", help="Reward模型路径")
+    # parser.add_argument("--reward_model_path", type=str, default="../../internlm2-1_8b-reward", help="Reward模型路径")
+    parser.add_argument("--reward_model_path", type=str, default="model/internlm2-1_8b-reward", help="Reward模型路径")
 
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")
@@ -350,11 +352,11 @@ if __name__ == "__main__":
         actor_model = torch.compile(actor_model)
         Logger('torch.compile enabled')
 
-    # Old Actor模型
+    # Old Actor模型 （不参与训练，仅用于计算KL散度))
     old_actor_model, _ = init_model(lm_config, base_weight, device=args.device)
     old_actor_model = old_actor_model.eval().requires_grad_(False)
 
-    # Reference模型
+    # Reference模型 (不参与训练，仅用于计算KL散度))
     ref_model, _ = init_model(lm_config, base_weight, device=args.device)
     ref_model = ref_model.eval().requires_grad_(False)
 
@@ -365,14 +367,34 @@ if __name__ == "__main__":
     critic_model = CriticModel(lm_config)
     critic_model.load_state_dict(state_dict, strict=False)
     critic_model = critic_model.to(args.device)
+    
+    # 补充：确保reward_model_path是绝对路径，避免在分布式环境中不同进程解析相对路径导致的错误
+    from pathlib import Path
+    reward_model_path = Path(args.reward_model_path)
+    if not reward_model_path.is_absolute():
+        # 相对路径 → 相对于项目根目录（脚本所在目录的上级）
+        reward_model_path = (Path(__file__).parent.parent / reward_model_path).resolve()
+    reward_model_path = str(reward_model_path)  # 转为字符串，避免Path对象兼容问题
 
-    # Reward模型
+    # Reward模型 （不参与训练，仅用于计算奖励）
     reward_model = AutoModel.from_pretrained(
-        args.reward_model_path, torch_dtype=torch.float16, trust_remote_code=True
+        reward_model_path, 
+        dtype=torch.float16, 
+        trust_remote_code=True,
+        local_files_only=True  # 强制本地加载，不联网
     )
     reward_model = reward_model.to(args.device).eval().requires_grad_(False)
-    reward_tokenizer = AutoTokenizer.from_pretrained(args.reward_model_path, trust_remote_code=True)
+    reward_tokenizer = AutoTokenizer.from_pretrained(reward_model_path, trust_remote_code=True,local_files_only=True)
     
+    # Reward模型 （不参与训练，仅用于计算奖励）
+    # reward_model = AutoModel.from_pretrained(
+    #     args.reward_model_path, 
+    #     dtype=torch.float16, 
+    #     trust_remote_code=True,
+    # )
+    # reward_model = reward_model.to(args.device).eval().requires_grad_(False)
+    # reward_tokenizer = AutoTokenizer.from_pretrained(args.reward_model_path, trust_remote_code=True)
+
     # 数据和优化器
     train_ds = RLAIFDataset(args.data_path, tokenizer, max_length=(args.max_seq_len + args.max_gen_len))
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None

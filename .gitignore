@@ -12,6 +12,8 @@ wheels/
 # ignore the training dataset
 dataset/pretrain_hq.jsonl
 dataset/sft_mini_512.jsonl
+dataset/rlaif-mini.jsonl
+dataset/dpo.jsonl
 
 # ignore the checkpoints and output weight files
 checkpoints/

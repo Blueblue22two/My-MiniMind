@@ -25,18 +25,40 @@ All dependencies in `pyproject.toml`.
 使用下面的命令下载指定的某个文件到指定路径:  
 `modelscope download --dataset gongjy/minimind_dataset xxx_file_name --local_dir ./xxx_dir`
 
-- Example:   
-
 下载`pretrain_hq.jsonl`的数据集到路径`/root/autodl-tmp/My-MiniMind/dataset`中  
 `modelscope download --dataset gongjy/minimind_dataset pretrain_hq.jsonl --local_dir /root/autodl-tmp/My-MiniMind/dataset`
 
+ 
+强化训练：  
+Reward model下载：  
+```bash
+# AutoDL 通常提供镜像加速
+export HF_ENDPOINT=https://hf-mirror.com
 
-## 3. 预训练  
+# 执行下载命令
+hf download internlm/internlm2-1_8b-reward \
+  --local-dir ./model/internlm2-1_8b-reward
+```
+
+
+## 3. 训练  
+**训练过程**：
+1. Pretraining
+2. Full-SFT
+3. Reasoning
+4. RLHF (PPO,GRPO,DPO等)
+5. OPtional (LoRA微调，蒸馏)
+
 调用预训练并启动swanlab记录日志   
 `uv run python trainer/trainer_pretrain.py --use_wandb`    
 需要注册swanlab账号，用下面指令登陆. 
 `swanlab login`  
 
-uv run python trainer/trainer_ppo.py --use_wandb
+### RLHF训练  
+- PPO:  
+`uv run python trainer/trainer_grpo.py --use_wandb`
 
-uv run python trainer/trainer_ppo.py --use_wandb --reasoning 0
+
+训练好后的model权重下载：
+Example:
+`modelscope download --model gongjy/MiniMind2-PyTorch ppo_actor_512.pth --local_dir /root/autodl-tmp/My-MiniMind/out`
