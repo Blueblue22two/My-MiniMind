@@ -197,7 +197,7 @@ def grpo_train_epoch(epoch, loader, iters, ref_model, reward_model, reward_token
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind GRPO (Group Relative Policy Optimization)")
-    parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default="out", help="模型保存目录")
     parser.add_argument('--save_weight', default='grpo', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=2, help="batch size")
@@ -220,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--reasoning", type=int, default=1, choices=[0, 1], help='推理模型类型（0=普通模型，1=推理模型）')
 
     # parser.add_argument("--reward_model_path", type=str, default="../../internlm2-1_8b-reward", help="Reward模型路径")
-    parser.add_argument("--reward_model_path", type=str, default="model/internlm2-1_8b-reward", help="Reward模型路径")
+    parser.add_argument("--reward_model_path", type=str, default="../../internlm2-1_8b-reward", help="Reward模型路径")
 
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")
@@ -267,22 +267,15 @@ if __name__ == "__main__":
     ref_model = ref_model.eval().requires_grad_(False)
 
     # Reward模型
-    # 补充：确保reward_model_path是绝对路径，避免在分布式环境中不同进程解析相对路径导致的错误
-    from pathlib import Path
-    reward_model_path = Path(args.reward_model_path)
-    if not reward_model_path.is_absolute():
-        # 相对路径 → 相对于项目根目录（脚本所在目录的上级）
-        reward_model_path = (Path(__file__).parent.parent / reward_model_path).resolve()
-    reward_model_path = str(reward_model_path)  # 转为字符串，避免Path对象兼容问题
 
     reward_model = AutoModel.from_pretrained(
-        reward_model_path, 
+        args.reward_model_path, 
         dtype=torch.float16, 
         trust_remote_code=True,
         local_files_only=True  # 强制本地加载，不联网
     )
     reward_model = reward_model.to(args.device).eval().requires_grad_(False)
-    reward_tokenizer = AutoTokenizer.from_pretrained(reward_model_path, trust_remote_code=True,local_files_only=True)
+    reward_tokenizer = AutoTokenizer.from_pretrained(args.reward_model_path, trust_remote_code=True,local_files_only=True)
 
     # 数据和优化器
     train_ds = RLAIFDataset(args.data_path, tokenizer, max_length=lm_config.max_seq_len)

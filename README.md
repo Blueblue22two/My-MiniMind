@@ -28,12 +28,17 @@ All dependencies in `pyproject.toml`.
 下载`pretrain_hq.jsonl`的数据集到路径`/root/autodl-tmp/My-MiniMind/dataset`中  
 `modelscope download --dataset gongjy/minimind_dataset pretrain_hq.jsonl --local_dir /root/autodl-tmp/My-MiniMind/dataset`
 
+modelscope download --dataset gongjy/minimind_dataset lora_identity.jsonl --local_dir /root/autodl-tmp/My-MiniMind/dataset
  
 强化训练：  
 Reward model下载：  
 ```bash
 # AutoDL 通常提供镜像加速
 export HF_ENDPOINT=https://hf-mirror.com
+
+训练好后的model权重下载：
+Example:
+`modelscope download --model gongjy/MiniMind2-PyTorch ppo_actor_512.pth --local_dir /root/autodl-tmp/My-MiniMind/out`
 
 # 执行下载命令
 hf download internlm/internlm2-1_8b-reward \
@@ -55,10 +60,11 @@ hf download internlm/internlm2-1_8b-reward \
 `swanlab login`  
 
 ### RLHF训练  
-- PPO:  
+- DPO:  
+`uv run python trainer/trainer_dpo.py --use_wandb`
+
+- GRPO:  
 `uv run python trainer/trainer_grpo.py --use_wandb`
 
 
-训练好后的model权重下载：
-Example:
-`modelscope download --model gongjy/MiniMind2-PyTorch ppo_actor_512.pth --local_dir /root/autodl-tmp/My-MiniMind/out`
+uv run python trainer/trainer_lora.py --use_wandb

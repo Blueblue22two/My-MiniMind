@@ -67,7 +67,7 @@ def train_epoch(epoch, loader, iters, lora_params, start_step=0, wandb=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind LoRA Fine-tuning")
-    parser.add_argument("--save_dir", type=str, default="../out/lora", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default="out/lora", help="模型保存目录")
     parser.add_argument("--lora_name", type=str, default="lora_identity", help="LoRA权重名称(如lora_identity/lora_medical等)")
     parser.add_argument("--epochs", type=int, default=50, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
@@ -83,8 +83,12 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=340, type=int, help="训练的最大截断长度（中文1token≈1.5~1.7字符）")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument("--data_path", type=str, default="../dataset/lora_identity.jsonl", help="LoRA训练数据路径")
-    parser.add_argument('--from_weight', default='full_sft', type=str, help="基于哪个权重训练，默认full_sft")
+    parser.add_argument("--data_path", type=str, default="dataset/lora_identity.jsonl", help="LoRA训练数据路径")
+
+    # 选择最终的DPO后进行identity训练
+    parser.add_argument('--from_weight', default='full_sft', type=str, help="底座初始化权重类型，如full_sft")
+    parser.add_argument('--dpo_ckpt', default='out/dpo_512.pth', type=str, help="DPO训练后的权重文件路径")
+
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-LoRA", help="wandb项目名")
@@ -117,6 +121,25 @@ if __name__ == "__main__":
     
     # ========== 5. 定义模型、应用LoRA、冻结非LoRA参数 ==========
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
+
+    # 先加载DPO训练后的权重
+    if args.dpo_ckpt and os.path.exists(args.dpo_ckpt):
+        Logger(f"加载DPO权重: {args.dpo_ckpt}")
+        dpo_state = torch.load(args.dpo_ckpt, map_location=args.device)
+
+        # 兼容两种保存格式：
+        # 1. 直接保存的是 state_dict
+        # 2. 保存的是 {'model': state_dict, ...}
+        if isinstance(dpo_state, dict) and 'model' in dpo_state:
+            dpo_state_dict = dpo_state['model']
+        else:
+            dpo_state_dict = dpo_state
+
+        missing_keys, unexpected_keys = model.load_state_dict(dpo_state_dict, strict=False)
+        Logger(f"DPO权重加载完成, missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+    else:
+        raise FileNotFoundError(f"DPO权重文件不存在: {args.dpo_ckpt}")
+
     if args.use_compile == 1:
         model = torch.compile(model)
         Logger('torch.compile enabled')
